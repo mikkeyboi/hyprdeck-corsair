@@ -1,0 +1,23 @@
+# hyprdeck-corsair: active-seat access to the Corsair vendor HID interfaces (DESIGN §8).
+# Needed for everything the plugin does. TAG+="uaccess" grants the logged-in seat user an ACL;
+# it changes no group or mode. Keyboard input interfaces stay bound to the kernel.
+# Interface 01 = command interface (usage page 0xFF42 usage 1); interface 02 = IN-only events.
+# 1b1c:2b07 SLIPSTREAM receiver (K65 PLUS Wireless); 2b10/2b11/2b23 K65 PLUS Wireless on a cable;
+# 1b7c/1b7d/1bc5 K100 RGB (OPX v1 / MX / OPX v2).
+# hidraw does not reliably inherit usb_id properties from input/USB events. Import them here
+# before matching the interface below. Keep VID/PID ATTRS matches on the same USB-device parent.
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b07|2b10|2b11|2b23|1b7c|1b7d|1bc5", ENV{ID_USB_INTERFACE_NUM}=="", IMPORT{builtin}="usb_id"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b07", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b07", ENV{ID_USB_INTERFACE_NUM}=="02", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b10", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b10", ENV{ID_USB_INTERFACE_NUM}=="02", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b11", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b11", ENV{ID_USB_INTERFACE_NUM}=="02", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b23", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b23", ENV{ID_USB_INTERFACE_NUM}=="02", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7c", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7c", ENV{ID_USB_INTERFACE_NUM}=="02", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7d", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7d", ENV{ID_USB_INTERFACE_NUM}=="02", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc5", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc5", ENV{ID_USB_INTERFACE_NUM}=="02", TAG+="uaccess"

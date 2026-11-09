@@ -1,0 +1,10 @@
+{
+  "api_version": 1,
+  "id": "corsair",
+  "name": "Corsair keyboards",
+  "description": "K65 PLUS Wireless and K100 RGB: onboard lighting, brightness, Win-lock, power, remaps, macros and dial",
+  "version": "0.1.0",
+  "executable": "hyprdeck-corsair",
+  "update_repo": "mikkeyboi/hyprdeck-corsair",
+  "asset": "hyprdeck-corsair-linux-x86_64"
+}

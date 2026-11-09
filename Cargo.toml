@@ -1,0 +1,20 @@
+[package]
+name = "hyprdeck-corsair"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Hyprdeck plugin for Corsair K65 PLUS Wireless and K100 RGB keyboards: onboard lighting, power, keys, macros and an opt-in live-mode companion"
+repository = "https://github.com/mikkeyboi/hyprdeck-corsair"
+publish = false
+
+[dependencies]
+anyhow = "1"
+evdev = "0.13"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

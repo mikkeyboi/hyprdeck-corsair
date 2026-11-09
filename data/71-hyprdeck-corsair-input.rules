@@ -1,0 +1,15 @@
+# hyprdeck-corsair OPTIONAL input rule (DESIGN §8): only needed for remaps, macros, dial emulation
+# and the key tester. Privacy trade-off: with this rule ANY process running as the seat user can
+# read every key typed on these keyboards and can inject keyboard/mouse input through /dev/uinput.
+# Install it only if you want those features.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+# Keyboard event nodes of the supported Corsair devices (receiver, cable and K100 RGB).
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b07", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b10", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b11", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="2b23", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7c", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b7d", TAG+="uaccess"
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1bc5", TAG+="uaccess"
+# The companion's own virtual devices ("hyprdeck-corsair <model>" and "… dial").
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="hyprdeck-corsair*", TAG+="uaccess"

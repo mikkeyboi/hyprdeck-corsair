@@ -1,0 +1,64 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (v followed by Cargo/plugin version)
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      ASSET: hyprdeck-corsair-linux-x86_64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate exact release identity
+        shell: bash
+        run: |
+          cargo_version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')
+          test "$RELEASE_TAG" = "v$cargo_version"
+          jq -e --arg version "$cargo_version" --arg asset "$ASSET" '.api_version == 1 and .id == "corsair" and .version == $version and .executable == "hyprdeck-corsair" and .update_repo == "mikkeyboi/hyprdeck-corsair" and .asset == $asset' plugin.json
+          git show-ref --verify "refs/tags/$RELEASE_TAG"
+      - run: python3 -I scripts/check-packaging.py
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+      - name: Assemble standalone release assets
+        shell: bash
+        run: |
+          mkdir -p dist
+          install -m 0755 target/release/hyprdeck-corsair "dist/$ASSET"
+          install -m 0644 plugin.json dist/plugin.json
+          install -m 0644 data/70-hyprdeck-corsair.rules dist/70-hyprdeck-corsair.rules
+          install -m 0644 data/71-hyprdeck-corsair-input.rules dist/71-hyprdeck-corsair-input.rules
+          (cd dist && sha256sum "$ASSET" > "$ASSET.sha256")
+          python3 -I scripts/smoke.py "dist/$ASSET"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hyprdeck-corsair-linux-x86_64
+          path: dist/*
+      - name: Publish stable versioned assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Refusing to replace an existing release; publish a new version/tag." >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --title "Hyprdeck Corsair $RELEASE_TAG" --generate-notes
