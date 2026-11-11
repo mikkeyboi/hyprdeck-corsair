@@ -31,6 +31,7 @@ const DEADLINE: Duration = Duration::from_secs(10);
 const MAX_RESPONSE: usize = 1024 * 1024 - 4096;
 const MAX_ACTION_NAME: usize = 128;
 pub const HOST_FEATURE_KEYBOARD: &str = "keyboard_visualization";
+pub const HOST_FEATURE_ANIMATION: &str = "keyboard_animation";
 
 #[derive(Debug, Deserialize)]
 struct Request {
@@ -52,6 +53,7 @@ fn empty_args() -> Value {
 #[derive(Debug, Clone, PartialEq)]
 struct Validated {
     viz: bool,
+    animation: bool,
     action: Option<actions::Parsed>,
 }
 
@@ -65,17 +67,23 @@ fn validate(request: Request) -> Result<Validated> {
     let Value::Object(args) = &request.args else {
         bail!("args must be a JSON object");
     };
-    let viz = request.host_features.as_array().is_some_and(|features| {
-        features
-            .iter()
-            .any(|f| f.as_str() == Some(HOST_FEATURE_KEYBOARD))
-    });
+    let has = |feature: &str| {
+        request
+            .host_features
+            .as_array()
+            .is_some_and(|features| features.iter().any(|f| f.as_str() == Some(feature)))
+    };
+    let (viz, animation) = (has(HOST_FEATURE_KEYBOARD), has(HOST_FEATURE_ANIMATION));
     match request.method.as_str() {
         Some("state") => {
             if !request.action.is_null() {
                 bail!("state requests must not include an action");
             }
-            Ok(Validated { viz, action: None })
+            Ok(Validated {
+                viz,
+                animation,
+                action: None,
+            })
         }
         Some("action") => {
             let Some(name) = request.action.as_str() else {
@@ -86,6 +94,7 @@ fn validate(request: Request) -> Result<Validated> {
             }
             Ok(Validated {
                 viz,
+                animation,
                 action: Some(actions::parse(name, args)?),
             })
         }
@@ -101,7 +110,7 @@ fn envelope_error(error: impl std::fmt::Display) -> Value {
 }
 
 /// Gather everything once, then read and render every keyboard (per-keyboard error isolation).
-fn build_state(backend: &dyn Backend, viz: bool) -> State {
+fn build_state(backend: &dyn Backend, viz: bool, animation: bool) -> State {
     let now = backend.now();
     let daemon = match backend.daemon_hello() {
         Ok(None) => Daemon::NotRunning,
@@ -120,6 +129,7 @@ fn build_state(backend: &dyn Backend, viz: bool) -> State {
         let snapshot = snapshot::read(backend, keyboard, via_daemon, now);
         let view = View {
             viz,
+            animation,
             daemon: &daemon,
             service,
             input_rule,
@@ -156,8 +166,8 @@ fn build_state(backend: &dyn Backend, viz: bool) -> State {
     State {
         title: "Corsair keyboards".into(),
         description:
-            "Onboard lighting, keys and power for Corsair keyboards. Settings change only when \
-                      you apply them."
+            "Lighting, keys and device settings for Corsair keyboards. Nothing changes until you \
+                      apply it."
                 .into(),
         groups,
         products,
@@ -169,7 +179,7 @@ fn dispatch(backend: &dyn Backend, validated: &Validated) -> Result<State> {
     if let Some(parsed) = &validated.action {
         actions::execute(backend, parsed, backend.now())?;
     }
-    Ok(build_state(backend, validated.viz))
+    Ok(build_state(backend, validated.viz, validated.animation))
 }
 
 /// Serialize the success envelope, dropping visualizations if the state would exceed the cap.
