@@ -154,7 +154,11 @@ impl Fake {
             .collect()
     }
     fn state(&self, viz: bool) -> Value {
-        let validated = Validated { viz, action: None };
+        let validated = Validated {
+            viz,
+            animation: viz,
+            action: None,
+        };
         let state = dispatch(self, &validated).unwrap();
         let envelope = success(state);
         assert!(envelope["error"].is_null(), "{}", envelope["error"]);
@@ -706,7 +710,7 @@ fn k65_state_is_valid_and_complete() {
     assert!(rows > 20);
     let product = &state["products"][0];
     assert_eq!(product["id"], fake.id());
-    assert_eq!(product["status"], "Connected · Hardware mode");
+    assert_eq!(product["status"], "Connected");
     assert_eq!(product["connection"], "SLIPSTREAM 2.4 GHz receiver");
     assert_eq!(product["battery"]["percentage"], 42.0);
     assert_eq!(product["battery"]["charging"], false);
@@ -716,14 +720,11 @@ fn k65_state_is_valid_and_complete() {
         .iter()
         .map(|s| s["id"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        sections,
-        ["overview", "lighting", "keys", "power", "diagnostics"]
-    );
+    assert_eq!(sections, ["lighting", "keys", "dial", "device", "advanced"]);
     // Effect read back once (Rain slow from the fake) and shown with its time.
     let effect = row(&state, "lighting:", "effect");
     assert_eq!(effect["control"]["value"], "rain");
-    assert!(effect["subtitle"].as_str().unwrap().contains("as of"));
+    assert!(effect["subtitle"].as_str().unwrap().contains("FN+1"));
     assert_eq!(
         row(&state, "lighting:", "speed")["control"]["value"],
         "slow"
@@ -733,22 +734,18 @@ fn k65_state_is_valid_and_complete() {
         70.0
     );
     assert_eq!(
-        row(&state, "overview:", "battery")["subtitle"],
+        row(&state, "device:", "battery")["subtitle"],
         "42 % · On battery"
     );
     assert_eq!(
-        row(&state, "overview:", "firmware")["subtitle"],
+        row(&state, "device:", "firmware")["subtitle"],
         "Keyboard 05 1A 9A · Receiver 01 44"
     );
-    // The K65 PLUS refuses polling changes, so it offers no polling control.
-    assert!(
-        group(&state, "power:")["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|row| row["id"] != "polling")
-    );
-    assert_eq!(row(&state, "power:", "sleep")["control"]["value"], "unset");
+    // The K65 PLUS refuses polling changes, so its rate is shown without a control.
+    let polling = row(&state, "device:", "polling");
+    assert!(polling.get("control").is_none_or(Value::is_null));
+    assert!(polling["subtitle"].as_str().unwrap().contains("fixed"));
+    assert_eq!(row(&state, "device:", "sleep")["control"]["value"], "unset");
     assert!(
         group(&state, "diagnostics:")["collapsed"]
             .as_bool()
@@ -779,13 +776,27 @@ fn refresh_never_switches_mode_once_the_effect_is_cached() {
 fn visualization_follows_host_features() {
     let fake = Fake::k65("viz");
     let without = fake.state(false);
-    assert!(group(&without, "overview:").get("visualization").is_none());
+    for id in ["lighting:", "remaps:"] {
+        assert!(
+            group(&without, id)
+                .get("visualization")
+                .is_none_or(Value::is_null)
+        );
+    }
     let with = fake.state(true);
-    let viz = &group(&with, "overview:")["visualization"];
+    // The Lighting picture previews the onboard effect and never offers remapping.
+    let lighting = &group(&with, "lighting:")["visualization"];
+    check_visualization(lighting);
+    assert_eq!(lighting["status"], "Rain (slow)");
+    assert_eq!(
+        lighting["animation"],
+        json!({"kind": "rain", "speed": "slow", "colors": []})
+    );
+    assert!(lighting.get("remap").is_none() && lighting.get("paint").is_none());
+    let viz = &group(&with, "remaps:")["visualization"];
     check_visualization(viz);
     assert_eq!(viz["name"], with["products"][0]["name"]);
     assert_eq!(viz["stream"]["args"], json!(["--input-stream", fake.id()]));
-    assert_eq!(viz["status"], "Onboard effect: Rain (slow)");
     // Receiver link: no per-key paint; input rule present: shared remap options.
     assert!(viz.get("paint").is_none());
     assert!(viz["remap"]["options"].as_array().unwrap().len() > 100);
@@ -796,7 +807,7 @@ fn visualization_follows_host_features() {
     let mut no_rule = Fake::k65("viz-norule");
     no_rule.input_rule = false;
     let state = no_rule.state(true);
-    let viz = &group(&state, "overview:")["visualization"];
+    let viz = &group(&state, "remaps:")["visualization"];
     assert!(viz.get("remap").is_none());
     assert!(
         viz["keys"]
@@ -815,11 +826,17 @@ fn k100_state_offers_live_lighting_and_paint() {
     assert!(has_group(&state, "live-lighting:"));
     assert!(!has_group(&state, "looks:"));
     assert!(!has_group(&state, "dial:"));
-    let viz = &group(&state, "overview:")["visualization"];
+    let viz = &group(&state, "lighting:")["visualization"];
     assert_eq!(viz["paint"]["action"], "set-key-colors");
+    assert!(viz.get("animation").is_none());
+    assert!(
+        group(&state, "remaps:")["visualization"]
+            .get("paint")
+            .is_none()
+    );
     assert!(row(&state, "live-lighting:", "zone-edge")["control"]["kind"] == "color");
     assert_eq!(
-        row(&state, "power:", "polling")["control"]["options"]
+        row(&state, "device:", "polling")["control"]["options"]
             .as_array()
             .unwrap()
             .len(),
@@ -864,12 +881,12 @@ fn failed_read_becomes_an_info_group() {
     fake.open_error = Some("Keyboard busy — another process is using it".into());
     let state = fake.state(true);
     check_state(&state);
-    let error = row(&state, "error:", "error");
+    let error = row(&state, "notice:", "error");
     assert!(
         error["subtitle"]
             .as_str()
             .unwrap()
-            .ends_with("no setting was changed.")
+            .ends_with("unplug and replug it.")
     );
     assert!(error["control"].is_null());
     assert_eq!(state["products"][0]["status"], "Unavailable");
@@ -996,7 +1013,8 @@ fn effect_changes_write_the_slot_and_skip_identical() {
         row(&state, "lighting:", "color")["control"]["value"],
         "#FF0000"
     );
-    let viz = &group(&state, "overview:")["visualization"];
+    let viz = &group(&state, "lighting:")["visualization"];
+    assert!(viz.get("animation").is_none());
     assert!(
         viz["keys"]
             .as_array()
@@ -1068,7 +1086,7 @@ fn sleep_is_write_only_and_cached() {
     let fake = Fake::k65("sleep");
     let state = fake.action("set-sleep", json!({"value": "15"})).unwrap();
     assert_eq!(fake.sets(PROP_SLEEP_MS), [900_000]);
-    assert_eq!(row(&state, "power:", "sleep")["control"]["value"], "15");
+    assert_eq!(row(&state, "device:", "sleep")["control"]["value"], "15");
     fake.action("set-sleep", json!({"value": "15"})).unwrap();
     assert_eq!(
         fake.sets(PROP_SLEEP_MS),
@@ -1115,7 +1133,7 @@ fn remaps_and_macros_edit_live_config() {
             .unwrap()
             .contains("Esc")
     );
-    let viz = &group(&state, "overview:")["visualization"];
+    let viz = &group(&state, "remaps:")["visualization"];
     let caps = viz["keys"]
         .as_array()
         .unwrap()
@@ -1196,7 +1214,7 @@ fn per_key_lighting_needs_a_wired_board() {
         row(&state, "live-lighting:", "enabled")["control"]["value"],
         true
     );
-    let viz = &group(&state, "overview:")["visualization"];
+    let viz = &group(&state, "lighting:")["visualization"];
     let key = |id: &str| {
         viz["keys"]
             .as_array()
@@ -1208,12 +1226,7 @@ fn per_key_lighting_needs_a_wired_board() {
     };
     assert_eq!(key("esc")["color"], "#00FF00");
     assert_eq!(key("f1")["color"], "#FFFFFF");
-    assert!(
-        viz["status"]
-            .as_str()
-            .unwrap()
-            .contains("configured preview")
-    );
+    assert!(viz["status"].as_str().unwrap().contains("not confirmed"));
     wired.action("clear-key-colors", json!({})).unwrap();
     wired
         .action("set-live-lighting", json!({"value": false}))

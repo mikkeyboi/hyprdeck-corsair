@@ -27,11 +27,37 @@ fn round(value: f32) -> f64 {
     (f64::from(value) * 10_000.0).round() / 10_000.0
 }
 
+/// Which tab the picture is on: it offers only that tab's action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    Lighting,
+    Keys,
+}
+
+/// The host preview that matches an onboard effect (`keyboard_animation`); Static has a colour.
+fn animation(effect: &crate::effects::Effect) -> Option<Value> {
+    let kind = match effect.kind {
+        EffectKind::Watercolor => "watercolor",
+        EffectKind::SpiralRainbow => "spiral",
+        EffectKind::Rain => "rain",
+        EffectKind::RainbowWave => "rainbow_wave",
+        EffectKind::TypeKey => "reactive",
+        EffectKind::TypeRipple => "ripple",
+        EffectKind::ColorShift => "shift",
+        EffectKind::ColorPulse => "pulse",
+        EffectKind::ColorWave => "wave",
+        EffectKind::Static => return None,
+    };
+    let speed = effect.speed.map_or("medium", |speed| speed.value());
+    Some(json!({"kind": kind, "speed": speed, "colors": []}))
+}
+
 pub fn visualization(
     view: &View,
     keyboard: &Keyboard,
     snapshot: &Snapshot,
     live: &DeviceLive,
+    purpose: Purpose,
 ) -> Value {
     let id = keyboard.id.as_str();
     let caps = keyboard.model.capabilities(keyboard.link);
@@ -48,16 +74,17 @@ pub fn visualization(
     let status = match (&snapshot.link, live_lighting) {
         (Link::Asleep, _) => "Keyboard asleep — press a key".to_string(),
         (Link::Failed(_), _) => "Keyboard unavailable".to_string(),
-        (_, true) if applied => "Per-key lighting applied".to_string(),
-        (_, true) => {
-            "Per-key lighting configured preview — not acknowledged as applied".to_string()
-        }
+        (_, true) if applied => "Custom colours · on the keyboard now".to_string(),
+        (_, true) => "Custom colours · saved, not confirmed on the keyboard yet".to_string(),
         _ => match super::render::effect_summary(snapshot) {
-            Some(summary) => format!("Onboard effect: {summary}"),
-            None if caps.onboard_effects => "Onboard effect not read yet".to_string(),
-            None => "Onboard lighting (set in iCUE)".to_string(),
+            Some(summary) => summary,
+            None if caps.onboard_effects => "Effect not read yet".to_string(),
+            None => "Onboard lighting".to_string(),
         },
     };
+    let preview = (view.animation && !live_lighting && snapshot.online())
+        .then(|| effect.as_ref().and_then(animation))
+        .flatten();
     let can_remap = view.input_rule && view.live.is_ok();
     let options = labels::target_options(live, true);
     let (mut width, mut height) = (round(layout.width), round(layout.height));
@@ -94,7 +121,7 @@ pub fn visualization(
                 "color": color.map(Rgb::hex),
                 "pressed": null,
             });
-            if can_remap && key.evdev.is_some() {
+            if can_remap && purpose == Purpose::Keys && key.evdev.is_some() {
                 value["remap"] = json!(remap.map_or("default".to_string(), labels::action_value));
             }
             value
@@ -109,16 +136,19 @@ pub fn visualization(
         "keys": keys,
         "stream": {"args": ["--input-stream", id]},
     });
-    if caps.live_lighting && view.live.is_ok() {
+    if let Some(preview) = preview {
+        visualization["animation"] = preview;
+    }
+    if purpose == Purpose::Lighting && caps.live_lighting && view.live.is_ok() {
         visualization["paint"] = json!({
             "label": "Colour selected keys",
             "action": "set-key-colors",
             "args": {"device": id},
         });
     }
-    if can_remap {
+    if can_remap && purpose == Purpose::Keys {
         visualization["remap"] = json!({
-            "label": "Remap selected key",
+            "label": "Selected key does",
             "action": "remap-key",
             "args": {"device": id},
             "options": options,

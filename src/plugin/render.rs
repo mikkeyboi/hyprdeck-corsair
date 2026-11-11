@@ -22,6 +22,8 @@ use serde_json::{Value, json};
 /// Everything gathered once per request that rendering needs besides the snapshot.
 pub struct View<'a> {
     pub viz: bool,
+    /// The host can preview a named effect on the picture (`keyboard_animation`).
+    pub animation: bool,
     pub daemon: &'a Daemon,
     pub service: ServiceState,
     pub input_rule: bool,
@@ -66,14 +68,6 @@ pub const ZONE_KEYS: &str = "keys";
 
 pub fn percent(raw: u32) -> u32 {
     (raw.min(1000) + 5) / 10
-}
-
-fn section(id: &'static str, title: &'static str, groups: &[&Group]) -> Section {
-    Section {
-        id,
-        title,
-        groups: groups.iter().map(|group| group.id.clone()).collect(),
-    }
 }
 
 pub fn hex_bytes(bytes: &[u8]) -> String {
@@ -133,9 +127,7 @@ fn product_status(snapshot: &Snapshot) -> String {
         Link::Asleep => "Asleep — press a key".into(),
         Link::Failed(_) => "Unavailable".into(),
         Link::Online => match snapshot.value(PROP_MODE) {
-            Some(1) => "Connected · Hardware mode".into(),
-            Some(2) if snapshot.via_daemon => "Connected".into(),
-            Some(2) => "Connected".into(),
+            Some(2) if !snapshot.via_daemon => "Connected · needs Rescue (see Advanced)".into(),
             _ => "Connected".into(),
         },
     }
@@ -158,82 +150,62 @@ pub fn keyboard(view: &View, keyboard: &Keyboard, snapshot: &Snapshot) -> (Vec<G
         Ok(config) => config.devices.get(id).cloned().unwrap_or_default(),
         Err(_) => DeviceLive::default(),
     };
-    let mut groups = Vec::new();
-    let mut sections = Vec::new();
+    let mut groups: Vec<Group> = Vec::new();
+    let mut sections: Vec<Section> = Vec::new();
+    let mut add = |id: &'static str, title: &'static str, section_groups: Vec<Group>| {
+        sections.push(Section {
+            id,
+            title,
+            groups: section_groups.iter().map(|g| g.id.clone()).collect(),
+        });
+        groups.extend(section_groups);
+    };
 
-    let overview = overview(view, keyboard, snapshot, &device_live);
-    let mut overview_ids = vec![overview.id.clone()];
-    groups.push(overview);
-    if let Link::Failed(error) = &snapshot.link {
-        let mut group = Group::new(
-            format!("error:{id}"),
-            "Keyboard unavailable",
-            "Nothing was written to the keyboard",
-        );
-        group.row(Row::info(
-            "error",
-            "Couldn't read the keyboard",
-            format!("{error} — no setting was changed."),
-        ));
-        overview_ids.push(group.id.clone());
-        groups.push(group);
-    }
-    sections.push(super::model::Section {
-        id: "overview",
-        title: "Overview",
-        groups: overview_ids,
-    });
-
+    // Lighting: the picture, the onboard effect, then colours of your own.
+    let mut lighting_groups = Vec::new();
     if snapshot.online() {
-        let mut lighting_groups = vec![lighting(keyboard, snapshot)];
+        lighting_groups.push(lighting(view, keyboard, snapshot, &device_live));
         if caps.onboard_effects {
             lighting_groups.push(looks(view, keyboard));
         }
-        sections.push(Section {
-            id: "lighting",
-            title: "Lighting",
-            groups: lighting_groups.iter().map(|g| g.id.clone()).collect(),
-        });
-        groups.extend(lighting_groups);
     }
     if caps.live_lighting {
-        let group = live_lighting(view, keyboard, &device_live);
-        sections.push(section("live-lighting", "Per-key lighting", &[&group]));
-        groups.push(group);
+        lighting_groups.push(live_lighting(view, keyboard, &device_live));
+    }
+    if !lighting_groups.is_empty() {
+        add("lighting", "Lighting", lighting_groups);
     }
 
-    let mut key_groups = Vec::new();
+    // Keys: the picture again, for assigning keys; macros and the gaming lock below it.
+    let mut key_groups = vec![
+        remaps(view, keyboard, snapshot, &device_live),
+        macros(view, keyboard, &device_live),
+    ];
     if snapshot.online() && caps.win_lock {
         key_groups.push(lock_group(keyboard, snapshot));
     }
-    key_groups.push(remaps(view, keyboard, snapshot, &device_live));
-    key_groups.push(macros(view, keyboard, &device_live));
+    add("keys", "Keys", key_groups);
+
     if keyboard.model == Model::K65PlusWireless {
-        key_groups.push(dial(view, keyboard, &device_live));
+        add("dial", "Dial", vec![dial(view, keyboard, &device_live)]);
     }
-    sections.push(Section {
-        id: "keys",
-        title: "Keys & Macros",
-        groups: key_groups.iter().map(|g| g.id.clone()).collect(),
-    });
-    groups.extend(key_groups);
-
     if snapshot.online() {
-        let group = power(keyboard, snapshot);
-        sections.push(section("power", "Power & performance", &[&group]));
-        groups.push(group);
+        add("device", "Device", vec![device(keyboard, snapshot)]);
     }
+    add(
+        "advanced",
+        "Advanced",
+        vec![
+            live_mode(view, keyboard, snapshot, &device_live),
+            diagnostics(view, keyboard, snapshot),
+        ],
+    );
 
-    let helper = live_mode(view, keyboard, snapshot, &device_live);
-
-    let diagnostics = diagnostics(view, keyboard, snapshot);
-    sections.push(section(
-        "diagnostics",
-        "Diagnostics",
-        &[&diagnostics, &helper],
-    ));
-    groups.push(diagnostics);
-    groups.push(helper);
+    // A keyboard that is asleep or unreachable says so at the top of the first tab.
+    if let Some(notice) = notice(keyboard, snapshot) {
+        sections[0].groups.insert(0, notice.id.clone());
+        groups.insert(0, notice);
+    }
 
     let battery = (caps.battery && snapshot.online())
         .then(|| snapshot.value(PROP_BATTERY))
@@ -251,8 +223,8 @@ pub fn keyboard(view: &View, keyboard: &Keyboard, snapshot: &Snapshot) -> (Vec<G
         name: keyboard.name.to_string(),
         kind: "keyboard",
         description: match keyboard.model {
-            Model::K65PlusWireless => "Onboard lighting, keys, dial and power".into(),
-            Model::K100Rgb => "Brightness, keys and per-key lighting".into(),
+            Model::K65PlusWireless => "Lighting effects, key remaps, dial and battery".into(),
+            Model::K100Rgb => "Per-key colours, key remaps and polling rate".into(),
         },
         status: product_status(snapshot),
         connection: connection(keyboard).into(),
@@ -262,100 +234,109 @@ pub fn keyboard(view: &View, keyboard: &Keyboard, snapshot: &Snapshot) -> (Vec<G
     (groups, product)
 }
 
-fn overview(view: &View, keyboard: &Keyboard, snapshot: &Snapshot, live: &DeviceLive) -> Group {
+/// Shown first when the keyboard cannot be reached; `None` when it is online.
+fn notice(keyboard: &Keyboard, snapshot: &Snapshot) -> Option<Group> {
     let id = &keyboard.id;
-    let caps = keyboard.model.capabilities(keyboard.link);
-    let mut group = Group::new(format!("overview:{id}"), "Keyboard", connection(keyboard));
-    if view.viz {
-        group.visualization = Some(viz::visualization(view, keyboard, snapshot, live));
-    }
     match &snapshot.link {
+        Link::Online => None,
         Link::Asleep => {
+            let mut group = Group::new(
+                format!("notice:{id}"),
+                "Keyboard asleep or off",
+                "Saved settings are still shown",
+            );
             group.row(Row::info(
                 "asleep",
-                "Keyboard asleep or off",
-                "Press any key on it to wake it, then refresh. Saved settings are still shown.",
+                "Press any key to wake it",
+                "Lighting and device settings come back as soon as it answers.",
             ));
+            Some(group)
         }
-        Link::Failed(_) => {}
-        Link::Online => {
-            if caps.battery
-                && let Some(per_mille) = snapshot.value(PROP_BATTERY)
-            {
-                let charge = snapshot
-                    .value(PROP_CHARGE)
-                    .and_then(charge_label)
-                    .map_or("", |(label, _)| label);
-                let text = format!("{} %", percent(per_mille));
-                group.row(Row::info(
-                    "battery",
-                    "Battery",
-                    if charge.is_empty() {
-                        text
-                    } else {
-                        format!("{text} · {charge}")
-                    },
-                ));
-            }
-            let mode = match snapshot.value(PROP_MODE) {
-                Some(1) => "Hardware mode — the keyboard runs its onboard settings".to_string(),
-                Some(2) if snapshot.via_daemon => {
-                    "Hyprdeck is driving the dial or lighting right now".to_string()
-                }
-                Some(2) => {
-                    "Software mode with nothing driving it — use Rescue in Diagnostics if this persists"
-                        .to_string()
-                }
-                Some(other) => format!("Unknown mode {other}"),
-                None => "Unknown".to_string(),
-            };
-            group.row(Row::info("mode", "Mode", mode));
-            if let Some(code) = snapshot.value(PROP_LAYOUT) {
-                group.row(Row::info("layout", "Layout", layout_label(code)));
-            }
-            let mut parts = Vec::new();
-            if let Some(bytes) = snapshot.props.get(&PROP_APP_FW) {
-                parts.push(format!("Keyboard {}", firmware(bytes)));
-            }
-            if let Some(bytes) = &snapshot.receiver_firmware {
-                parts.push(format!("Receiver {}", firmware(bytes)));
-            }
-            if !parts.is_empty() {
-                group.row(Row::info("firmware", "Firmware", parts.join(" · ")));
-            }
-            if let Some(hz) = snapshot.value(PROP_POLLING).and_then(bragi::polling_hz) {
-                group.row(Row::info("polling", "Polling rate", format!("{hz} Hz")));
-            }
-            if let Some(summary) = effect_summary(snapshot) {
-                group.row(Row::info("effect", "Onboard effect", summary));
-            }
+        Link::Failed(error) => {
+            let mut group = Group::new(
+                format!("notice:{id}"),
+                "Keyboard not answering",
+                "Nothing was changed on the keyboard",
+            );
+            group.row(Row::info(
+                "error",
+                "Couldn't read the keyboard",
+                format!("{error}. If it stays like this, unplug and replug it."),
+            ));
+            Some(group)
         }
+    }
+}
+
+/// Battery, performance and identity of an online keyboard.
+fn device(keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
+    let id = &keyboard.id;
+    let caps = keyboard.model.capabilities(keyboard.link);
+    let mut group = Group::new(format!("device:{id}"), "Device", connection(keyboard));
+    if caps.battery
+        && let Some(per_mille) = snapshot.value(PROP_BATTERY)
+    {
+        let charge = snapshot
+            .value(PROP_CHARGE)
+            .and_then(charge_label)
+            .map_or("", |(label, _)| label);
+        let text = format!("{} %", percent(per_mille));
+        group.row(Row::info(
+            "battery",
+            "Battery",
+            if charge.is_empty() {
+                text
+            } else {
+                format!("{text} · {charge}")
+            },
+        ));
+    }
+    power_rows(&mut group, keyboard, snapshot);
+    if let Some(code) = snapshot.value(PROP_LAYOUT) {
+        group.row(Row::info("layout", "Layout", layout_label(code)));
+    }
+    let mut parts = Vec::new();
+    if let Some(bytes) = snapshot.props.get(&PROP_APP_FW) {
+        parts.push(format!("Keyboard {}", firmware(bytes)));
+    }
+    if let Some(bytes) = &snapshot.receiver_firmware {
+        parts.push(format!("Receiver {}", firmware(bytes)));
+    }
+    if !parts.is_empty() {
+        group.row(Row::info("firmware", "Firmware", parts.join(" · ")));
     }
     group
 }
 
-fn lighting(keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
+fn lighting(view: &View, keyboard: &Keyboard, snapshot: &Snapshot, live: &DeviceLive) -> Group {
     let id = keyboard.id.as_str();
     let caps = keyboard.model.capabilities(keyboard.link);
     let mut group = Group::new(
         format!("lighting:{id}"),
         "Lighting",
         if caps.onboard_effects {
-            "Saved on the keyboard; works without hyprdeck running"
+            "Saved on the keyboard — it keeps this look on any computer"
         } else {
             "Brightness is saved on the keyboard"
         },
     );
+    if view.viz {
+        group.visualization = Some(viz::visualization(
+            view,
+            keyboard,
+            snapshot,
+            live,
+            viz::Purpose::Lighting,
+        ));
+    }
     if caps.onboard_effects {
         let reading = snapshot.effect.as_ref();
         let current = reading.and_then(|reading| reading.effect());
         let mut subtitle = match reading {
-            Some(reading) if !reading.raw.is_empty() => format!(
-                "{} · {} · applies immediately (also FN+1…0)",
-                reading.decoded().map(|d| d.describe()).unwrap_or_default(),
-                as_of_plain(reading.read_at)
-            ),
-            _ => "Not read yet · applies immediately (also FN+1…0)".to_string(),
+            Some(reading) if !reading.raw.is_empty() => {
+                "Changes at once · FN+1…0 on the keyboard pick effects too".to_string()
+            }
+            _ => "Not read from the keyboard yet".to_string(),
         };
         if let Some(error) = reading.and_then(|reading| reading.error.as_ref()) {
             subtitle = format!("{subtitle} · last read failed: {error}");
@@ -394,19 +375,20 @@ fn lighting(keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
                     .map(|speed| option(speed.value(), speed.label()))
                     .collect();
                 group.row(
-                    Row::info("speed", "Speed", "Animation speed of the current effect")
-                        .controlled(choice(speed.value(), options, "set-speed", id, json!({}))),
+                    Row::info("speed", "Speed", "How fast the effect moves").controlled(choice(
+                        speed.value(),
+                        options,
+                        "set-speed",
+                        id,
+                        json!({}),
+                    )),
                 );
             }
             if effect.kind.has_color() {
                 let value = effect.color.unwrap_or(Rgb(0xff, 0xff, 0xff)).hex();
                 group.row(
-                    Row::info("color", "Colour", "Colour of the Static effect").controlled(color(
-                        &value,
-                        "set-color",
-                        id,
-                        json!({}),
-                    )),
+                    Row::info("color", "Colour", "The whole keyboard in one colour")
+                        .controlled(color(&value, "set-color", id, json!({}))),
                 );
             }
         }
@@ -418,7 +400,7 @@ fn lighting(keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
                 Row::info(
                     "brightness",
                     "Brightness",
-                    format!("{value} % · FN+F5/F6 also change it"),
+                    format!("{value} % · 0 turns the lights off · FN+F5/F6 also change it"),
                 )
                 .controlled(number(
                     f64::from(value),
@@ -427,24 +409,6 @@ fn lighting(keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
                     5.0,
                     "set-brightness",
                     id,
-                )),
-            );
-            group.row(
-                Row::info("lights-off", "Lights off", "Brightness 0; keeps the effect").controlled(
-                    button(
-                        "Lights off",
-                        "brightness-preset",
-                        id,
-                        json!({"value": "off"}),
-                    ),
-                ),
-            );
-            group.row(
-                Row::info("full", "Full brightness", "Brightness 100 %").controlled(button(
-                    "Full",
-                    "brightness-preset",
-                    id,
-                    json!({"value": "full"}),
                 )),
             );
         }
@@ -465,16 +429,17 @@ fn lighting(keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
         group.row(
             Row::info(
                 "reread",
-                "Re-read from keyboard",
-                "Fetches the effect now (FN shortcuts are not reported automatically)",
+                "Changed it with the FN keys?",
+                "The keyboard doesn't announce that — sync to show its current effect here",
             )
-            .controlled(button("Re-read", "reread-effect", id, json!({}))),
+            .controlled(button("Sync", "reread-effect", id, json!({}))),
         );
     } else {
         group.row(Row::info(
             "onboard-note",
-            "Onboard effects",
-            "Set in iCUE on this model. Use Per-key lighting for colours from hyprdeck.",
+            "Built-in effects",
+            "This model's stored effects can't be changed from Linux yet. Turn on Custom colours \
+             below to light it from here.",
         ));
     }
     group
@@ -493,7 +458,7 @@ fn looks(view: &View, keyboard: &Keyboard) -> Group {
     let mut group = Group::new(
         format!("looks:{id}"),
         "Saved looks",
-        "Effect + brightness presets stored on this computer",
+        "Effect and brightness presets, kept on this computer",
     );
     let looks = match view.looks {
         Ok(looks) => looks.devices.get(id).cloned().unwrap_or_default(),
@@ -571,8 +536,8 @@ fn live_lighting(view: &View, keyboard: &Keyboard, live: &DeviceLive) -> Group {
     let id = keyboard.id.as_str();
     let mut group = Group::new(
         format!("live-lighting:{id}"),
-        "Per-key lighting",
-        "Your own colours per key and zone; the onboard effect returns when this is off",
+        "Custom colours",
+        "Your own colour for every key and zone, while this computer is on",
     );
     if let Err(error) = view.live {
         group.row(Row::info(
@@ -586,8 +551,8 @@ fn live_lighting(view: &View, keyboard: &Keyboard, live: &DeviceLive) -> Group {
     group.row(
         Row::info(
             "enabled",
-            "Use per-key lighting",
-            "Off returns the keyboard to its onboard effect",
+            "Use custom colours",
+            "Off hands the lights back to the keyboard's built-in effect",
         )
         .controlled(switch(lighting.enabled, "set-live-lighting", id, json!({}))),
     );
@@ -625,7 +590,7 @@ fn live_lighting(view: &View, keyboard: &Keyboard, live: &DeviceLive) -> Group {
         "per-key",
         "Single keys",
         match (count, view.viz) {
-            (0, true) => "Select keys on the keyboard picture, then apply a colour".to_string(),
+            (0, true) => "Select keys on the picture above, then choose a colour".to_string(),
             (0, false) => "Needs a Hyprdeck version with the keyboard picture".to_string(),
             (n, _) => format!("{n} key(s) have their own colour"),
         },
@@ -700,9 +665,18 @@ fn remaps(view: &View, keyboard: &Keyboard, snapshot: &Snapshot, live: &DeviceLi
     let id = keyboard.id.as_str();
     let mut group = Group::new(
         format!("remaps:{id}"),
-        "Remaps",
-        "Change what a key does on this computer (not saved on the keyboard)",
+        "Key assignments",
+        "Change what any key does. Applies on this computer; the keyboard itself is untouched",
     );
+    if view.viz {
+        group.visualization = Some(viz::visualization(
+            view,
+            keyboard,
+            snapshot,
+            live,
+            viz::Purpose::Keys,
+        ));
+    }
     if let Err(error) = view.live {
         group.row(Row::info(
             "live-error",
@@ -712,9 +686,9 @@ fn remaps(view: &View, keyboard: &Keyboard, snapshot: &Snapshot, live: &DeviceLi
         return group;
     }
     let status = if !view.input_rule {
-        "Needs the input permission rule (see Diagnostics); remaps are saved but inactive"
+        "Needs the input permission rule (see Advanced); assignments are saved but inactive"
     } else if view.service != ServiceState::Running {
-        "Saved but not running — add or change a remap to restart"
+        "Saved but not running — change any assignment to restart"
     } else {
         if view.daemon.status(id).is_some_and(|status| {
             status.grabbed
@@ -729,7 +703,9 @@ fn remaps(view: &View, keyboard: &Keyboard, snapshot: &Snapshot, live: &DeviceLi
             "Saved — not active yet"
         }
     };
-    group.row(Row::info("remap-status", "Status", status));
+    if !view.input_rule || !live.remaps.is_empty() {
+        group.row(Row::info("remap-status", "Status", status));
+    }
     let layout = layouts::layout(keyboard.model, physical(snapshot));
     let keys = labels::remappable_keys(layout);
     let first = keys
@@ -741,12 +717,23 @@ fn remaps(view: &View, keyboard: &Keyboard, snapshot: &Snapshot, live: &DeviceLi
         .map(|(value, label)| option(value, label))
         .collect();
     let targets = labels::target_options(live, false);
+    if view.viz && view.input_rule && live.remaps.is_empty() {
+        group.row(Row::info(
+            "remap-hint",
+            "Pick a key on the picture",
+            "Then choose what it should do. Press keys to see them light up.",
+        ));
+    }
     if !key_options.is_empty() {
         group.row(
             Row::info(
                 "add-remap",
-                "Add remap",
-                "A combo (e.g. ctrl+shift+t) overrides the action",
+                if view.viz {
+                    "Assign a key combination"
+                } else {
+                    "Add remap"
+                },
+                "For shortcuts such as ctrl+shift+t; a combo overrides the action",
             )
             .controlled(form(
                 "Add remap",
@@ -780,7 +767,7 @@ fn macros(view: &View, keyboard: &Keyboard, live: &DeviceLive) -> Group {
     let mut group = Group::new(
         format!("macros:{id}"),
         "Macros",
-        "Bind one with a remap or the dial",
+        "Record a sequence here, then assign it to a key or the dial",
     );
     if view.live.is_err() {
         return group;
@@ -857,7 +844,7 @@ fn dial(view: &View, keyboard: &Keyboard, live: &DeviceLive) -> Group {
     let mut group = Group::new(
         format!("dial:{id}"),
         "Dial",
-        "Volume is built into the keyboard; hyprdeck handles the other modes in the background",
+        "Volume is built into the keyboard. Other modes work while this computer is on",
     );
     if view.live.is_err() {
         return group;
@@ -914,14 +901,10 @@ fn dial(view: &View, keyboard: &Keyboard, live: &DeviceLive) -> Group {
     group
 }
 
-fn power(keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
+/// Sleep timer and polling rate, both saved on the keyboard.
+fn power_rows(group: &mut Group, keyboard: &Keyboard, snapshot: &Snapshot) {
     let id = keyboard.id.as_str();
     let caps = keyboard.model.capabilities(keyboard.link);
-    let mut group = Group::new(
-        format!("power:{id}"),
-        "Power & performance",
-        "Saved on the keyboard",
-    );
     if caps.sleep_timeout {
         let cached = crate::storage::ValueCache::get(id, "sleep_minutes")
             .and_then(|value| value.as_u64())
@@ -959,8 +942,15 @@ fn power(keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
     let max = snapshot.value(PROP_MAX_POLLING);
     let current = snapshot.value(PROP_POLLING).and_then(bragi::polling_hz);
     match max {
-        // A fixed-rate keyboard shows its rate in Overview only.
-        Some(_) if caps.polling_rates.is_empty() => {}
+        Some(_) if caps.polling_rates.is_empty() => {
+            if let Some(hz) = current {
+                group.row(Row::info(
+                    "polling",
+                    "Polling rate",
+                    format!("{hz} Hz · fixed on this keyboard"),
+                ));
+            }
+        }
         Some(max) => {
             let mut rates: Vec<u32> = caps
                 .polling_rates
@@ -1004,7 +994,6 @@ fn power(keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
             ));
         }
     }
-    group
 }
 
 fn live_mode(view: &View, keyboard: &Keyboard, snapshot: &Snapshot, live: &DeviceLive) -> Group {
@@ -1094,8 +1083,8 @@ fn diagnostics(view: &View, keyboard: &Keyboard, snapshot: &Snapshot) -> Group {
     let id = keyboard.id.as_str();
     let mut group = Group::new(
         format!("diagnostics:{id}"),
-        "Diagnostics",
-        "Technical details for troubleshooting",
+        "Troubleshooting",
+        "Technical details, and a rescue button if the keyboard misbehaves",
     )
     .collapsed();
     let mut nodes = vec![format!("Commands {}", keyboard.cmd_node.display())];
